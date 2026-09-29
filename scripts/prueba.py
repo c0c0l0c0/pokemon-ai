@@ -1,10 +1,10 @@
-from src.wrappers.teams import RandomTeam
+from src.wrappers.battles import SingleBattle
 
 
 def main():
-    team = RandomTeam()
+    battle = SingleBattle()
 
-    print(team)
+    print(battle)
 
 
 if __name__ == "__main__":
