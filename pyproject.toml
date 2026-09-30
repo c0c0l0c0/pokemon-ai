@@ -3,6 +3,8 @@ name = "pokemon-ai"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
+    "gymnasium>=1.3.0",
     "numpy>=2.4.6",
     "poke-env>=0.16.1",
+    "torch>=2.14.0",
 ]

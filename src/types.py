@@ -1,3 +1,4 @@
+import re
 from enum import Enum
 from random import choice
 from typing import ClassVar
@@ -116,8 +117,11 @@ class PokemonStats:
 
 class BattleFormat:
     def __init__(self, format: str = ""):
-        self.name = format if format != "" else choice(BATTLE_FORMATS)
+        self.name: str = format if format != "" else choice(BATTLE_FORMATS)
         self.doubles: bool = "doubles" in self.name or "vgc" in self.name
+
+        match = re.search(r"\d", self.name)
+        self.gen = int(match.group()) if match else 0
 
     def __repr__(self):
         return f"{self.name}"

@@ -16,3 +16,9 @@ class PokemonObs:
         self.item: str = pokemon_data["item"]
         self.stats: PokemonStats = pokemon_data["stats"]
         self.evs: PokemonStats = pokemon_data["evs"]
+
+        self.status_effects: list[str] = []
+        self.can_mega_evolve: bool = False
+        self.can_z_move: bool = False
+        self.can_dynamax: bool = False
+        self.can_tera: bool = False
