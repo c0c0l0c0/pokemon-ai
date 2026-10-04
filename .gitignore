@@ -212,3 +212,6 @@ __marimo__/
 .DS_Store
 
 data/
+
+# Training runs (models, snapshots, logs)
+checkpoints/

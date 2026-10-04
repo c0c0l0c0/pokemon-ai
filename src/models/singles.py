@@ -6,6 +6,9 @@ One shared encoder per entity type (moves, Pokémon, field), a Transformer over 
 from Pokémon token i, and move j from move token j of my active Pokémon.
 """
 
+from pathlib import Path
+from typing import Any
+
 import numpy as np
 import torch
 from torch import Tensor, nn
@@ -48,6 +51,14 @@ class SinglesPolicy(nn.Module):
         n_heads: int = 4,
     ):
         super().__init__()
+        # Saved with the weights, to rebuild the model in load_policy
+        self.hparams = {
+            "n_actions": n_actions,
+            "d_model": d_model,
+            "d_move": d_move,
+            "n_layers": n_layers,
+            "n_heads": n_heads,
+        }
         # Actions are 6 switches, then 4 moves per gimmick option (none, mega, z, dynamax, tera)
         self.n_gimmicks = (n_actions - N_TEAM) // N_MOVES
         assert N_TEAM + N_MOVES * self.n_gimmicks == n_actions
@@ -162,3 +173,25 @@ def to_tensors(
         )
         for key in observations[0]
     }
+
+
+def save_policy(policy: SinglesPolicy, path: str | Path, **extra: Any):
+    """
+    Saves the weights and what's needed to rebuild the model, plus any extra entries
+    (e.g. the optimizer state).
+    """
+    torch.save({"hparams": policy.hparams, "model": policy.state_dict(), **extra}, path)
+
+
+def load_policy(
+    path: str | Path,
+    vocab: Vocab | None = None,
+    device: torch.device | str = "cpu",
+) -> SinglesPolicy:
+    """
+    Loads a policy saved with save_policy. The vocab must be the one it was trained with.
+    """
+    checkpoint = torch.load(path, map_location=device)
+    policy = SinglesPolicy(vocab or Vocab.load(), **checkpoint["hparams"]).to(device)
+    policy.load_state_dict(checkpoint["model"])
+    return policy
