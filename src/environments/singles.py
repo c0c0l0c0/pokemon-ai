@@ -1,14 +1,14 @@
 from typing import Any
 
 import numpy as np
-from gymnasium.spaces import Box, Space
-from poke_env.battle.abstract_battle import AbstractBattle
+from gymnasium.spaces import Space
+from poke_env.battle import AbstractBattle, Battle
 from poke_env.environment import SingleAgentWrapper
 from poke_env.environment.singles_env import SinglesEnv
 from poke_env.player import Player, RandomPlayer
 
-# Placeholder size until the custom observation is designed
-OBS_SIZE = 10
+from src.observations.singles import SinglesObservation
+from src.observations.vocab import Vocab
 
 
 class SinglesBattleEnv(SinglesEnv):
@@ -23,17 +23,17 @@ class SinglesBattleEnv(SinglesEnv):
         18-21 move i + dynamax
         22-25 move i + terastallize
 
-    Observations are Dict({"observation": Box(OBS_SIZE), "action_mask": Box(n_actions)}).
+    Observations are Dict({"observation": SinglesObservation.space, "action_mask": Box(n_actions)}).
     The action_mask key is added automatically by PokeEnv when observation_spaces is set.
     """
 
-    def __init__(self, **kwargs):
+    def __init__(self, vocab: Vocab | None = None, **kwargs):
         super().__init__(**kwargs)
+        self.observation_builder = SinglesObservation(vocab)
         # PokeEnv.__setattr__ wraps each raw space into Dict({observation, action_mask}),
         # so the declared (wrapped) type doesn't match what we assign here
         observation_spaces: dict[str, Space[Any]] = {
-            agent: Box(low=-1.0, high=1.0, shape=(OBS_SIZE,), dtype=np.float32)
-            for agent in self.possible_agents
+            agent: self.observation_builder.space for agent in self.possible_agents
         }
         self.observation_spaces = observation_spaces
 
@@ -61,6 +61,6 @@ class SinglesBattleEnv(SinglesEnv):
             victory_value=30.0,
         )
 
-    def embed_battle(self, battle: AbstractBattle) -> np.ndarray:
-        # TODO: custom observation
-        return np.zeros(OBS_SIZE, dtype=np.float32)
+    def embed_battle(self, battle: AbstractBattle) -> dict[str, np.ndarray]:
+        assert isinstance(battle, Battle)
+        return self.observation_builder.embed(battle)
