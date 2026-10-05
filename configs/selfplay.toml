@@ -13,7 +13,7 @@ updates = 1000                       # PPO updates to train for
 n_envs = 16                          # battles played at the same time (2 Showdown accounts each)
 batch_size = 4096                    # learner decisions, from finished battles, per update
 max_turns = 300                      # longer battles are forfeited and count as ties
-device = "cuda"                      # "cpu", "cuda" or "mps", the model is small and Showdown is the bottleneck
+device = "cpu"                      # "cpu", "cuda" or "mps", the model is small and Showdown is the bottleneck
 seed = 0
 
 [ppo]
