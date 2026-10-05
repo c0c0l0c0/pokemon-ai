@@ -1,17 +1,24 @@
 """
-Offline checks of the training code, no Showdown server needed: GAE, reward, random
-teams, the opponent pool, PolicyPlayer and a PPO update.
+Offline checks of the training code, no Showdown server needed: config loading, GAE,
+reward, random teams, the opponent pool, battle stats, the TensorBoard logger,
+PolicyPlayer and a PPO update.
 
 Run from the project root:
     .venv/bin/python -m scripts.check_training
 """
 
+import json
+import shutil
 import tempfile
 from collections import Counter
+from dataclasses import asdict
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import torch
+from poke_env.battle import Battle
 from poke_env.data import GenData, to_id_str
 from poke_env.environment import SinglesEnv
 from poke_env.teambuilder import Teambuilder
@@ -23,12 +30,72 @@ from src.models.singles import SinglesPolicy, to_tensors
 from src.observations.singles import SinglesObservation
 from src.observations.vocab import Vocab
 from src.players.policy_player import PolicyPlayer
+from src.training.config import (
+    DEFAULT_CONFIG,
+    TrainConfig,
+    load_config,
+    read_toml,
+    save_config,
+)
+from src.training.logger import RunLogger
 from src.training.opponents import OpponentPool
 from src.training.ppo import PPOConfig, Trajectory, compute_gae, make_batch, ppo_update
+from src.training.stats import BattleStats, action_mix, parse_battle_log
 from src.utils.load_pokemon import choose_random_team_from_format
 from src.wrappers.teams import RandomTeam
 
 N_ACTIONS = 26  # gen 9
+
+# Turn 1: Garchomp KOs Gholdengo, then Corviknight comes in and faints to Stealth Rock.
+# Turn 2: Kingambit bounces a Stealth Rock back with Magic Bounce, then KOs Garchomp.
+BATTLE_LOG = [
+    ["", "turn", "1"],
+    ["", "move", "p1a: Garchomp", "Earthquake", "p2a: Gholdengo"],
+    ["", "-damage", "p2a: Gholdengo", "0 fnt"],
+    ["", "faint", "p2a: Gholdengo"],
+    ["", "switch", "p2a: Corviknight", "Corviknight, L80, M", "100/100"],
+    ["", "-damage", "p2a: Corviknight", "0 fnt", "[from] Stealth Rock"],
+    ["", "turn", "2"],
+    ["", "move", "p2a: Kingambit", "Stealth Rock", "", "[from] ability: Magic Bounce"],
+    ["", "move", "p2a: Kingambit", "Sucker Punch", "p1a: Garchomp"],
+    ["", "-damage", "p1a: Garchomp", "0 fnt"],
+]
+
+
+def check_config():
+    defaults = asdict(TrainConfig())
+    # configs/selfplay.toml has every setting but resume
+    from_file = read_toml(DEFAULT_CONFIG)
+    assert set(from_file) == set(defaults) - {"resume"}, set(from_file) ^ set(defaults)
+    # Without --config, new runs read it
+    assert asdict(load_config([])) == {**defaults, **from_file}
+
+    with tempfile.TemporaryDirectory() as directory:
+        path = Path(directory) / "test.toml"
+        path.write_text("[run]\nn_envs = 8\nbatch_size = 1024\n[ppo]\nent_coef = 0\n")
+        cfg = load_config(["--config", str(path), "--batch-size", "512"])
+        # The file beats the defaults, and flags beat the file
+        assert (cfg.n_envs, cfg.batch_size, cfg.ent_coef, cfg.lr) == (8, 512, 0.0, 3e-4)
+
+        path.write_text("[run]\nn_env = 8\n")
+        try:
+            load_config(["--config", str(path)])
+        except SystemExit as error:
+            assert "n_env" in str(error)
+        else:
+            raise AssertionError("an unknown setting was accepted")
+
+    # Resuming starts from the run's saved settings
+    run_dir = TrainConfig(run_name="check_training").run_dir
+    run_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        saved = TrainConfig(run_name="check_training", n_envs=3, lr=1e-3)
+        save_config(saved, run_dir / "config.json")
+        cfg = load_config(["--run-name", "check_training", "--resume", "--lr", "2e-3"])
+        assert (cfg.n_envs, cfg.lr, cfg.resume) == (3, 2e-3, True)
+    finally:
+        shutil.rmtree(run_dir)
+    print("config ok")
 
 
 def check_gae():
@@ -110,6 +177,97 @@ def check_pool(vocab: Vocab):
     print("opponent pool ok")
 
 
+def check_action_mix():
+    mix = action_mix(np.array([0, 5, 6, 9, 22, 25]), N_ACTIONS)
+    assert mix == {
+        "switch_rate": 2 / 6,
+        "move_rate": 2 / 6,
+        "mega_rate": 0.0,
+        "z_move_rate": 0.0,
+        "dynamax_rate": 0.0,
+        "tera_rate": 2 / 6,
+    }, mix
+    # Gens 1 to 5 have no gimmicks
+    assert set(action_mix(np.array([0, 6]), 10)) == {"switch_rate", "move_rate"}
+    print("action mix ok")
+
+
+def fake_battle(role: str, names: list[str], log: list[list[str]]) -> Battle:
+    """
+    Just what BattleStats reads from a finished battle.
+    """
+    team = {
+        f"{role}: {name}": SimpleNamespace(
+            species=to_id_str(name), revealed=True, fainted=False
+        )
+        for name in names
+    }
+    return cast(Battle, SimpleNamespace(player_role=role, team=team, _replay_data=log))
+
+
+def check_stats():
+    species_by_ident = {
+        f"{side}: {name}": to_id_str(name)
+        for side, names in (
+            ("p1", ["Garchomp"]),
+            ("p2", ["Gholdengo", "Corviknight", "Kingambit"]),
+        )
+        for name in names
+    }
+    log = parse_battle_log(BATTLE_LOG, species_by_ident)
+    assert log.move_uses["p1"] == Counter({("garchomp", "earthquake"): 1})
+    # The Stealth Rock was called by Magic Bounce, so it doesn't count
+    assert log.move_uses["p2"] == Counter({("kingambit", "suckerpunch"): 1})
+    # The Stealth Rock KO on Corviknight isn't credited to Earthquake
+    assert log.kos["p1"] == Counter({("garchomp", "earthquake"): 1})
+    assert log.kos["p2"] == Counter({("kingambit", "suckerpunch"): 1})
+
+    battles = (
+        fake_battle("p1", ["Garchomp", "Dragapult"], BATTLE_LOG),
+        fake_battle("p2", ["Gholdengo", "Corviknight", "Kingambit"], BATTLE_LOG),
+    )
+    stats = BattleStats()
+    stats.record(battles, learner_seats=(0,), won=True)
+    # Self-play battle: the learner played both sides, seat 1 won this time
+    stats.record(battles, learner_seats=(0, 1), won=False)
+    garchomp = stats.species["garchomp"]
+    assert (garchomp["games"], garchomp["wins"], garchomp["kos"]) == (2, 1, 2)
+    assert stats.species["kingambit"]["wins"] == 1
+    assert stats.moves["suckerpunch"]["kos"] == 1
+    assert stats.opponents["kingambit"]["kos"] == 2
+    assert stats.opponents["garchomp"]["kos"] == 1
+
+    tables = stats.tables(top_k=5, min_games=1)
+    assert "garchomp" in tables["best_pokemon"]
+    assert tables["toughest_opponents"].startswith("| opponent |")
+    assert "Not enough games" in stats.tables(top_k=5, min_games=100)["best_pokemon"]
+
+    with tempfile.TemporaryDirectory() as directory:
+        stats.write_csv(Path(directory))
+        for name in ("species", "moves", "opponents"):
+            header = (Path(directory) / f"{name}.csv").read_text().splitlines()[0]
+            assert header.startswith(name) and "win_rate" in header, header
+        stats.save(Path(directory) / "state.json")
+        loaded = BattleStats.load(Path(directory) / "state.json")
+        assert loaded.species == stats.species and loaded.moves == stats.moves
+    print("battle stats ok")
+
+
+def check_logger():
+    with tempfile.TemporaryDirectory() as directory:
+        logger = RunLogger(Path(directory))
+        logger.scalars(1, {"loss/policy": 0.5, "matches/wins": 3})
+        actions = np.array([0, 6, 6, 22])
+        logger.histogram("policy/actions", actions, 1, bins=np.arange(27) - 0.5)
+        logger.text("stats/best_pokemon", "| Pokémon | games |\n|---|---|", 1)
+        logger.close()
+
+        assert list((Path(directory) / "tensorboard").glob("events.out.tfevents.*"))
+        line = json.loads((Path(directory) / "log.jsonl").read_text())
+        assert line == {"update": 1, "loss/policy": 0.5, "matches/wins": 3}, line
+    print("logger ok")
+
+
 def check_policy_player(vocab: Vocab, observation: SinglesObservation):
     policy = SinglesPolicy(vocab, N_ACTIONS)
     player = PolicyPlayer(
@@ -162,11 +320,15 @@ def check_ppo(vocab: Vocab, observation: SinglesObservation):
 def main():
     vocab = Vocab.load()
     observation = SinglesObservation(vocab)
+    check_config()
     check_gae()
     check_trajectory()
     check_reward(vocab)
     check_teams()
     check_pool(vocab)
+    check_action_mix()
+    check_stats()
+    check_logger()
     check_policy_player(vocab, observation)
     check_ppo(vocab, observation)
 

@@ -1,0 +1,66 @@
+# Settings for scripts/train_selfplay.py, loaded by default for new runs.
+#
+# Use another file with --config path/to/file.toml, and override any setting from the
+# command line with its name in kebab-case, e.g. --batch-size 2048 --run-name test.
+# --resume continues a run with its saved settings (checkpoints/<run_name>/config.json).
+#
+# The [sections] are only for readability, every name must be unique.
+
+[run]
+run_name = "selfplay"                # results go to checkpoints/<run_name>/
+battle_format = "gen9randombattle"   # random battles need no teams, "gen9ou" uses data/showdown_sets
+updates = 1000                       # PPO updates to train for
+n_envs = 16                          # battles played at the same time (2 Showdown accounts each)
+batch_size = 4096                    # learner decisions, from finished battles, per update
+max_turns = 300                      # longer battles are forfeited and count as ties
+device = "mps"                       # "cpu", "cuda" or "mps", the model is small and Showdown is the bottleneck
+seed = 0
+
+[ppo]
+lr = 3e-4              # Adam learning rate
+gamma = 0.99           # discount, how much future rewards count (0.99 ~ the next 100 decisions)
+gae_lambda = 0.95      # GAE, lower means less variance but more bias in the advantages
+clip = 0.2             # how far an update can move each action's probability (ratio 1 +- clip)
+epochs = 100             # passes over each batch
+minibatch_size = 512
+vf_coef = 0.5          # weight of the value loss
+ent_coef = 0.01        # entropy bonus, keeps the policy exploring and mixing its choices
+max_grad_norm = 0.5    # gradient clipping
+target_kl = 0.05       # stops the epochs early if the policy moved more than this, 0 to never stop
+
+[opponents]
+p_latest = 0.5         # battles against the current policy, both sides are trained on
+p_scripted = 0.1       # battles against poke-env's bots (random, max base power, heuristics)
+                       # the rest are against past snapshots of the policy
+sampling = "uniform"   # "uniform" is fictitious self-play, "pfsp" plays more vs snapshots that beat it
+snapshot_every = 10    # updates between snapshots added to the pool
+max_snapshots = 50     # the oldest snapshots are dropped (and deleted) beyond this
+
+[reward]
+# +1 for a win and -1 for a loss, plus shaping_weight times the change in a state value:
+# fainted_value per fainted Pokémon, hp_value per HP fraction and status_value per
+# statused Pokémon, positive for the opponent's and negative for yours.
+# The defaults are the original 2, 1 and 0.5 for a win worth 30, scaled to a win = 1.
+fainted_value = 0.06666666666666667   # 2/30
+hp_value = 0.03333333333333333        # 1/30
+status_value = 0.016666666666666666   # 0.5/30
+shaping_weight = 1.0
+shaping_anneal_updates = 0            # anneals shaping_weight to 0 over this many updates, 0 keeps it
+
+[model]
+# Changing these needs a new run, existing checkpoints won't load
+d_model = 128    # size of the Pokémon and field tokens100d_move = 64      # size of the move tokens
+n_layers = 2     # Transformer layers
+n_heads = 4      # attention heads, d_model must be divisible by it
+
+[eval]
+eval_every = 25          # updates between evaluations against the scripted bots
+eval_battles = 50        # battles against each bot
+eval_concurrency = 10    # of those battles played at once
+eval_greedy = false      # always pick the most likely action instead of sampling
+
+[logging]
+tensorboard = true       # view with: .venv/bin/tensorboard --logdir checkpoints
+stats_every = 10         # updates between Pokémon / move tables (TensorBoard text and stats/*.csv)
+stats_top_k = 15         # rows per table
+stats_min_games = 20     # games needed to appear in the win rate tables

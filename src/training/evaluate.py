@@ -5,6 +5,8 @@ design, so fixed opponents are what show real progress.
 
 import asyncio
 
+from poke_env.ps_client import AccountConfiguration
+
 from src.models.singles import SinglesPolicy
 from src.observations.singles import SinglesObservation
 from src.players.policy_player import PolicyPlayer
@@ -22,11 +24,16 @@ class Evaluator:
         greedy: bool = False,
         concurrent_battles: int = 10,
     ):
-        # Created once and reused, so each evaluation doesn't open new connections
+        # Created once and reused, so each evaluation doesn't open new connections.
+        # Random name suffixes, so they don't clash with other processes' players
+        # (poke-env numbers names from 1 in every process).
         self.player = PolicyPlayer(
             policy,
             observation,
             greedy=greedy,
+            account_configuration=AccountConfiguration.generate(
+                "PolicyPlayer", rand=True
+            ),
             battle_format=battle_format,
             team=team_for_format(battle_format),
             max_concurrent_battles=concurrent_battles,
@@ -34,6 +41,9 @@ class Evaluator:
         )
         self.opponents = {
             name: cls(
+                account_configuration=AccountConfiguration.generate(
+                    cls.__name__, rand=True
+                ),
                 battle_format=battle_format,
                 team=team_for_format(battle_format),
                 max_concurrent_battles=concurrent_battles,
@@ -44,7 +54,7 @@ class Evaluator:
 
     def run(self, n_battles: int) -> dict[str, float]:
         """
-        Win rate against each scripted bot over n_battles.
+        Win rate against each scripted bot over n_battles, by bot name.
         """
         win_rates = {}
         for name, opponent in self.opponents.items():
@@ -52,5 +62,5 @@ class Evaluator:
             opponent.reset_battles()
             asyncio.run(self.player.battle_against(opponent, n_battles=n_battles))
             finished = max(self.player.n_finished_battles, 1)
-            win_rates[f"eval_{name}"] = self.player.n_won_battles / finished
+            win_rates[name] = self.player.n_won_battles / finished
         return win_rates

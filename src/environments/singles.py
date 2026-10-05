@@ -28,11 +28,25 @@ class SinglesBattleEnv(SinglesEnv):
     """
 
     def __init__(
-        self, vocab: Vocab | None = None, shaping_weight: float = 1.0, **kwargs
+        self,
+        vocab: Vocab | None = None,
+        shaping_weight: float = 1.0,
+        fainted_value: float = 2 / 30,
+        hp_value: float = 1 / 30,
+        status_value: float = 0.5 / 30,
+        **kwargs,
     ):
+        """
+        The reward is +1 for a win and -1 for a loss, plus shaping_weight times the
+        change in a hand-made state value: fainted_value per fainted Pokémon, hp_value
+        per HP fraction and status_value per statused Pokémon (see calc_reward).
+        """
         super().__init__(**kwargs)
-        # Weight of the HP / fainted / status part of the reward, can be annealed to 0
+        # Can be annealed to 0 during training
         self.shaping_weight = shaping_weight
+        self.fainted_value = fainted_value
+        self.hp_value = hp_value
+        self.status_value = status_value
         self.observation_builder = SinglesObservation(vocab)
         # PokeEnv.__setattr__ wraps each raw space into Dict({observation, action_mask}),
         # so the declared (wrapped) type doesn't match what we assign here
@@ -58,18 +72,16 @@ class SinglesBattleEnv(SinglesEnv):
 
     def calc_reward(self, battle: AbstractBattle) -> float:
         """
-        +1 for a win, -1 for a loss, plus the change in a hand-made state value (HP,
-        fainted, status). The weights keep the old ratios, where a win was worth 30.
+        +1 for a win, -1 for a loss, plus shaping_weight times the change in a hand-made
+        state value (HP, fainted, status) since the last call. The default weights keep
+        the original ratios (2, 1 and 0.5 for a win worth 30) with a win worth 1.
         """
-        shaping = (
-            self.reward_computing_helper(
-                battle,
-                fainted_value=2.0,
-                hp_value=1.0,
-                status_value=0.5,
-                victory_value=0.0,
-            )
-            / 30
+        shaping = self.reward_computing_helper(
+            battle,
+            fainted_value=self.fainted_value,
+            hp_value=self.hp_value,
+            status_value=self.status_value,
+            victory_value=0.0,
         )
         outcome = 1.0 if battle.won else -1.0 if battle.lost else 0.0
         return self.shaping_weight * shaping + outcome

@@ -180,7 +180,13 @@ def save_policy(policy: SinglesPolicy, path: str | Path, **extra: Any):
     Saves the weights and what's needed to rebuild the model, plus any extra entries
     (e.g. the optimizer state).
     """
-    torch.save({"hparams": policy.hparams, "model": policy.state_dict(), **extra}, path)
+    # Written next to it first, so stopping mid-save can't leave a corrupt file
+    path = Path(path)
+    temporary = path.with_name(path.name + ".tmp")
+    torch.save(
+        {"hparams": policy.hparams, "model": policy.state_dict(), **extra}, temporary
+    )
+    temporary.replace(path)
 
 
 def load_policy(

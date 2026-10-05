@@ -7,6 +7,7 @@ has a decision to make (e.g. only one side picks a switch after a faint). Only t
 learner's decisions are recorded, from both seats when it plays against itself.
 """
 
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -33,8 +34,13 @@ NO_ACTION = np.int64(-2)
 @dataclass
 class BattleResult:
     opponent: Opponent
-    won: bool | None  # None for ties and battles cut at max_turns
+    won: bool | None  # seat 0's result, None for ties and battles cut at max_turns
     turns: int
+    # Wall-clock time from the battle's start to its end
+    seconds: float
+    # Both seats' views of the battle, and the seats the learner played
+    battles: tuple[Battle, Battle]
+    learner_seats: tuple[int, ...]
 
 
 @dataclass
@@ -46,6 +52,7 @@ class _Slot:
     env: SinglesBattleEnv
     opponent: Opponent = LATEST
     opponent_policy: SinglesPolicy | None = None
+    started_at: float = 0.0
     observations: dict[str, Any] = field(default_factory=dict)
     trajectories: dict[int, Trajectory] = field(default_factory=dict)
     actions: list[np.int64] = field(default_factory=lambda: [NO_ACTION, NO_ACTION])
@@ -58,6 +65,10 @@ class _StepOutcome:
     finished: bool
     won: bool | None
     turns: int
+    battles: tuple[Battle, Battle]
+    # When this battle ended and the next one started, if it finished
+    ended_at: float = 0.0
+    next_started_at: float = 0.0
 
 
 class SelfPlayRunner:
@@ -70,7 +81,11 @@ class SelfPlayRunner:
         *,
         device: str = "cpu",
         max_turns: int = 300,
+        env_kwargs: dict[str, Any] | None = None,
     ):
+        """
+        env_kwargs go to every SinglesBattleEnv, e.g. the reward weights.
+        """
         self.pool = pool
         self.device = device
         self.max_turns = max_turns
@@ -84,6 +99,7 @@ class SelfPlayRunner:
                     log_level=40,
                     open_timeout=None,
                     strict=False,
+                    **(env_kwargs or {}),
                 )
             )
             for _ in range(n_envs)
@@ -117,9 +133,18 @@ class SelfPlayRunner:
                 finished = [t for t in slot.trajectories.values() if len(t)]
                 trajectories.extend(finished)
                 n_collected += sum(len(t) for t in finished)
-                results.append(BattleResult(slot.opponent, outcome.won, outcome.turns))
+                results.append(
+                    BattleResult(
+                        slot.opponent,
+                        outcome.won,
+                        outcome.turns,
+                        seconds=outcome.ended_at - slot.started_at,
+                        battles=outcome.battles,
+                        learner_seats=tuple(slot.trajectories),
+                    )
+                )
                 self.pool.record(slot.opponent, outcome.won)
-                self._start_battle(slot, outcome.observations)
+                self._start_battle(slot, outcome.observations, outcome.next_started_at)
         return trajectories, results
 
     def set_shaping_weight(self, weight: float):
@@ -131,7 +156,13 @@ class SelfPlayRunner:
             slot.env.close()
         self.executor.shutdown()
 
-    def _start_battle(self, slot: _Slot, observations: dict[str, Any]):
+    def _start_battle(
+        self,
+        slot: _Slot,
+        observations: dict[str, Any],
+        started_at: float | None = None,
+    ):
+        slot.started_at = started_at or time.perf_counter()
         slot.opponent = self.pool.sample()
         # Loaded now, so the snapshot can leave the pool while this battle goes on
         slot.opponent_policy = (
@@ -208,15 +239,19 @@ class SelfPlayRunner:
         agents = env.possible_agents
         observations, rewards, _, _, _ = env.step(dict(zip(agents, slot.actions)))
 
-        battle = env.battle1
-        assert battle is not None
+        # Kept before env.reset() replaces them, for the battle stats
+        battle, other_battle = env.battle1, env.battle2
+        assert isinstance(battle, Battle) and isinstance(other_battle, Battle)
         outcome = _StepOutcome(
             observations=observations,
             rewards=[rewards[agent] for agent in agents],
             finished=battle.finished or battle.turn >= self.max_turns,
             won=battle.won if battle.finished else None,
             turns=battle.turn,
+            battles=(battle, other_battle),
         )
         if outcome.finished:
+            outcome.ended_at = time.perf_counter()
             outcome.observations = env.reset()[0]
+            outcome.next_started_at = time.perf_counter()
         return outcome
