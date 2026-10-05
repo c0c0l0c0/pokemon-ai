@@ -1,0 +1,58 @@
+# Showdown server, training and TensorBoard.
+#
+#   docker compose up -d showdown tensorboard           # server on :8100, TensorBoard on :6006
+#   docker compose run --rm train                       # train with configs/selfplay.toml
+#   docker compose run --rm train --run-name x --resume # any train_selfplay.py arguments
+#   docker compose run --rm --entrypoint python train -m scripts.build_vocab
+#
+# Training needs the NVIDIA Container Toolkit on the host for the GPU.
+
+services:
+  showdown:
+    build:
+      context: .
+      dockerfile: docker/showdown.Dockerfile
+    image: pokemon-ai/showdown
+    # Training reaches it on 8000 inside the shared network, the host port is only for
+    # watching or playing in a browser (8000 is taken by vaultwarden on this machine)
+    ports:
+      - "127.0.0.1:${SHOWDOWN_PORT:-8100}:8000"
+    restart: unless-stopped
+
+  train:
+    build:
+      context: .
+      dockerfile: docker/train.Dockerfile
+    image: pokemon-ai/train
+    # Shares the server's network, so poke-env's default localhost:8000 just works
+    network_mode: "service:showdown"
+    depends_on:
+      showdown:
+        condition: service_healthy
+    user: "${UID:-1000}:${GID:-1000}"
+    shm_size: 1g
+    volumes:
+      - ./checkpoints:/app/checkpoints
+      - ./data:/app/data
+      - ./configs:/app/configs:ro
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    profiles: [train]
+
+  tensorboard:
+    build:
+      context: .
+      dockerfile: docker/train.Dockerfile
+    image: pokemon-ai/train
+    entrypoint: ["tensorboard", "--logdir", "/app/checkpoints", "--host", "0.0.0.0", "--port", "6006"]
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "127.0.0.1:${TENSORBOARD_PORT:-6006}:6006"
+    volumes:
+      - ./checkpoints:/app/checkpoints:ro
+    restart: unless-stopped

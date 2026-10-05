@@ -13,7 +13,7 @@ updates = 1000                       # PPO updates to train for
 n_envs = 16                          # battles played at the same time (2 Showdown accounts each)
 batch_size = 4096                    # learner decisions, from finished battles, per update
 max_turns = 300                      # longer battles are forfeited and count as ties
-device = "mps"                       # "cpu", "cuda" or "mps", the model is small and Showdown is the bottleneck
+device = "cuda"                      # "cpu", "cuda" or "mps", the model is small and Showdown is the bottleneck
 seed = 0
 
 [ppo]
@@ -49,7 +49,8 @@ shaping_anneal_updates = 0            # anneals shaping_weight to 0 over this ma
 
 [model]
 # Changing these needs a new run, existing checkpoints won't load
-d_model = 128    # size of the Pokémon and field tokens100d_move = 64      # size of the move tokens
+d_model = 128    # size of the Pokémon and field tokens
+d_move = 64      # size of the move tokens
 n_layers = 2     # Transformer layers
 n_heads = 4      # attention heads, d_model must be divisible by it
 
